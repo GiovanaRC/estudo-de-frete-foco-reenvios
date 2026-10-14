@@ -1,0 +1,6 @@
+# clasp: liga a pasta ao seu projeto Apps Script (use .clasp.json.example como modelo)
+.clasp.json
+.clasprc.json
+
+node_modules/
+*.log
