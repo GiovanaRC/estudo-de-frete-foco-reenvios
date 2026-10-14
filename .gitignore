@@ -2,5 +2,10 @@
 .clasp.json
 .clasprc.json
 
+# Python / pytest
+__pycache__/
+.pytest_cache/
+*.pyc
+
 node_modules/
 *.log

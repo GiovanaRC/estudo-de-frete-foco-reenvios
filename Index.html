@@ -33,7 +33,7 @@
   .filtros .limpar { margin-left:auto; border:1px solid var(--axis); background:transparent; border-radius:6px; padding:6px 12px; cursor:pointer; color:var(--ink2); }
   .filtros .limpar:hover { background:var(--page); }
 
-  main { padding:20px 28px 40px; max-width:1500px; margin:0 auto; transition:opacity .15s; }
+  main { padding:20px 28px 40px; width:100%; transition:opacity .15s; }
   main.busy { opacity:.55; }
   .sec { display:flex; align-items:center; gap:10px; margin:28px 0 12px; font-size:12px; letter-spacing:.8px; text-transform:uppercase; color:var(--ink2); font-weight:650; }
   .sec::before { content:""; width:4px; height:16px; border-radius:2px; background:var(--navy2); }
@@ -71,6 +71,27 @@
   @media (max-width:1200px) { .g6 { grid-template-columns:repeat(3,1fr); } .g3 { grid-template-columns:1fr 1fr; } }
   @media (max-width:1000px) { .g2b { grid-template-columns:1fr; } }
   @media (max-width:800px) { .g6, .g2, .g3, .g21 { grid-template-columns:1fr; } main, .top, .filtros { padding-left:14px; padding-right:14px; } }
+
+  /* Selo de validação (cabeçalho) */
+  button.pill { background:transparent; font:inherit; cursor:pointer; }
+  .selo.ok { background:rgba(12,163,12,.22); border-color:rgba(12,163,12,.65); color:#aef0ae; }
+  .selo.alerta { background:rgba(250,178,25,.2); border-color:rgba(250,178,25,.6); color:#ffd77a; }
+  .selo.erro { background:rgba(236,86,86,.24); border-color:rgba(255,120,120,.65); color:#ffc2c2; }
+
+  /* Pipeline ETL */
+  .etl { display:grid; grid-template-columns:repeat(4,1fr); gap:34px; }
+  .etapa { position:relative; background:var(--surface); border:1px solid var(--ring); border-radius:10px; padding:14px 16px; }
+  .etapa:not(:last-child)::after { content:"→"; position:absolute; right:-26px; top:50%; transform:translateY(-50%); color:var(--muted); font-size:20px; }
+  .etapa .n { font-size:11px; color:var(--muted); text-transform:uppercase; letter-spacing:.5px; }
+  .etapa .t { font-size:14px; font-weight:650; margin:2px 0 8px; }
+  .etapa .v { font-size:24px; font-weight:700; line-height:1.15; }
+  .etapa .l { font-size:12px; color:var(--ink2); }
+  .etapa .d { font-size:11.5px; color:var(--muted); margin-top:8px; line-height:1.4; }
+  .etapa.erro { border-color:var(--bad); }
+  @media (max-width:900px) { .etl { grid-template-columns:1fr 1fr; gap:14px; } .etapa::after { display:none; } }
+  .st { display:inline-flex; gap:5px; align-items:center; font-weight:650; font-size:12px; white-space:nowrap; }
+  .st.ok { color:var(--good); } .st.alerta { color:#8a5a00; } .st.erro { color:var(--bad); }
+  .tag.warn { background:#fdf0d0; color:#7a5200; }
 
   /* Faixa: frete total da operação */
   .tot { display:flex; gap:28px; align-items:center; flex-wrap:wrap; margin-bottom:12px; padding:14px 18px; }
@@ -158,6 +179,7 @@
     <span class="pill warn">Dados fictícios</span>
     <span class="pill" id="hPeriodo"></span>
     <span class="pill" id="hAtualizado"></span>
+    <button class="pill selo" id="selo" type="button" title="Ver detalhes da validação">Validando…</button>
   </div>
 </div>
 
@@ -247,6 +269,20 @@
       <button class="more" id="bMais" type="button">Mostrar mais</button>
     </section>
 
+    <div class="sec" id="qualidade">Qualidade dos dados · ETL e validação</div>
+    <div class="etl" id="etl"></div>
+    <section class="card" style="margin-top:12px">
+      <header>
+        <div><h3>Regras de validação</h3><div class="hint" id="qHint"></div></div>
+        <button class="tg" id="bSimular" type="button"></button>
+      </header>
+      <div class="scroll"><table class="dt" id="checks"></table></div>
+    </section>
+    <section class="card" id="quarentenaBox" style="margin-top:12px" hidden>
+      <header><div><h3>Registros em quarentena</h3><div class="hint" id="qHintQ">Não entram em nenhum cálculo do painel</div></div></header>
+      <div class="scroll"><table class="dt" id="quarentena"></table></div>
+    </section>
+
     <div class="foot">Dados fictícios gerados para demonstração (cerca de R$ 18 mi de frete de 1/jan a 14/out de 2026, consolidados em lotes de casos). Reenvio logístico = insucesso na entrega, extravio, avaria no transporte, endereço não localizado ou atraso excessivo.</div>
   </main>
 </div>
@@ -278,19 +314,35 @@ const addDays = (s, n) => new Date((dayNum(s) + n) * 86400000).toISOString().sli
 const brDate = s => s.split('-').reverse().join('/');
 const mesLbl = k => MES[+k.slice(5, 7) - 1] + '/' + k.slice(2, 4);
 
-let base = [], agg = [], hoje = '', charts = {}, linhasVisiveis = 20;
+let base = [], agg = [], hoje = '', qualidade = null, charts = {}, linhasVisiveis = 20;
 let cur = [], prev = [], N = 0;
 
 google.script.run
-  .withSuccessHandler(d => { base = d; iniciar(); })
+  .withSuccessHandler(d => { aplicar(d); iniciar(); })
   .withFailureHandler(e => { $('msg').textContent = 'Erro ao carregar: ' + e.message; })
-  .getDados();
+  .getDados(false);
+
+// Recebe { itens, qualidade } do pipeline (só registros validados chegam aqui).
+function aplicar(d) {
+  const itens = d.itens || d;
+  qualidade = d.qualidade || null;
+  // Registros agregados de outras categorias (Venda/Outros) só alimentam a faixa de frete total.
+  agg = itens.filter(r => r.categoria_frete && r.categoria_frete !== 'Pós-venda');
+  base = itens.filter(r => !r.categoria_frete || r.categoria_frete === 'Pós-venda');
+  hoje = base.reduce((m, r) => r.data > m ? r.data : m, '');
+  $('hAtualizado').textContent = 'Dados até ' + brDate(hoje);
+}
+
+// Alterna entre dados limpos e dados com defeitos injetados (demonstra a validação).
+function carregar(simular) {
+  $('main').classList.add('busy');
+  google.script.run
+    .withSuccessHandler(d => { aplicar(d); linhasVisiveis = 20; render(); })
+    .withFailureHandler(e => { $('main').classList.remove('busy'); alert('Erro ao carregar: ' + e.message); })
+    .getDados(!!simular);
+}
 
 function iniciar() {
-  // Registros agregados de outras categorias (Venda/Outros) só alimentam a faixa de frete total.
-  agg = base.filter(r => r.categoria_frete && r.categoria_frete !== 'Pós-venda');
-  base = base.filter(r => !r.categoria_frete || r.categoria_frete === 'Pós-venda');
-  hoje = base.reduce((m, r) => r.data > m ? r.data : m, '');
   const opts = (id, lista, todos) => $(id).innerHTML = '<option value="">' + todos + '</option>' + lista.map(x => '<option>' + esc(x) + '</option>').join('');
   opts('fTipo', TIPOS, 'Todos os tipos');
   opts('fTransp', [...new Set(base.map(r => r.transportadora))].sort(), 'Todas');
@@ -303,7 +355,7 @@ function iniciar() {
     const c = b.closest('.card'); c.classList.toggle('show-table');
     b.textContent = c.classList.contains('show-table') ? 'Gráfico' : 'Tabela';
   });
-  $('hAtualizado').textContent = 'Dados até ' + brDate(hoje);
+  $('selo').onclick = () => $('qualidade').scrollIntoView({ behavior:'smooth' });
   $('msg').hidden = true; $('app').hidden = false;
   Chart.defaults.font.family = 'system-ui,-apple-system,"Segoe UI",sans-serif';
   Chart.defaults.font.size = 12;
@@ -336,7 +388,7 @@ function render() {
   filtrar();
   setTimeout(() => {
     try {
-      renderTotal(); renderKpis(); renderInsights(); renderMini(); renderLog(); renderGeral(); renderRank(); renderDetalhe();
+      renderQualidade(); renderTotal(); renderKpis(); renderInsights(); renderMini(); renderLog(); renderGeral(); renderRank(); renderDetalhe();
     } finally { main.classList.remove('busy'); }
   }, 0);
 }
@@ -354,12 +406,45 @@ function spark(set, f, cor) {
 }
 
 function deltaHtml(c, p, pp, goodDown) {
-  if (!N || !prev.length) return '<span class="delta neu">sem base de comparação</span>';
+  if (!N || !prev.length) return '<span class="delta">&nbsp;</span>'; // sem período anterior: mantém a altura do cartão
   const d = pp ? c - p : (p ? 100 * (c - p) / p : 0);
   if (Math.abs(d) < 0.05) return '<span class="delta neu">▬ estável</span>';
   const up = d > 0, bad = goodDown === null ? null : (up === goodDown);
   const cls = bad === null ? 'neu' : bad ? 'bad' : 'good';
   return '<span class="delta ' + cls + '">' + (up ? '▲ ' : '▼ ') + fmt1(Math.abs(d)) + (pp ? ' p.p.' : '%') + '</span> <span style="font-size:11px;color:var(--muted)">vs. anterior</span>';
+}
+
+/* ---------- Qualidade dos dados (ETL e validação) ---------- */
+function renderQualidade() {
+  const q = qualidade, selo = $('selo');
+  if (!q) { selo.hidden = true; $('qualidade').hidden = true; $('etl').hidden = true; return; }
+  const r = q.resumo, ico = { ok:'✓', alerta:'▲', erro:'✕' }, rot = { ok:'Aprovada', alerta:'Alerta', erro:'Falhou' };
+  selo.hidden = false;
+  selo.className = 'pill selo ' + r.status;
+  selo.textContent = r.status === 'ok' ? '✓ Dados validados' : r.status === 'alerta' ? '▲ Validado com ' + fmtN(r.alertas) + ' alerta(s)' : '✕ ' + fmtN(r.quarentena) + ' registros em quarentena';
+
+  const etapa = (n, t, v, l, d, cls) => '<div class="etapa ' + (cls || '') + '"><div class="n">Etapa ' + n + '</div><div class="t">' + t + '</div><div class="v">' + v + '</div><div class="l">' + l + '</div><div class="d">' + d + '</div></div>';
+  $('etl').innerHTML =
+    etapa(1, 'Extração', fmtN(r.recebidos), 'registros recebidos', q.simulado ? 'Origem simulada com defeitos injetados' : 'Origem: gerador fictício (no dia a dia, o banco de dados)') +
+    etapa(2, 'Transformação', fmtN(r.ajustados), 'registros ajustados', 'Tipos numéricos, datas e textos padronizados (UF em maiúsculas, espaços removidos, valores arredondados)') +
+    etapa(3, 'Validação', fmtN(r.validos) + ' <span style="font-size:14px;font-weight:600;color:' + (r.quarentena ? 'var(--bad)' : 'var(--good)') + '">' + (r.quarentena ? '✕ ' + fmtN(r.quarentena) + ' em quarentena' : '✓ 0 em quarentena') + '</span>', 'registros válidos · ' + fmtN(r.alertas) + ' alerta(s)', fmtN(r.regras) + ' regras: ' + q.checks.filter(c => c.status === 'ok').length + ' aprovadas', r.quarentena ? 'erro' : '') +
+    etapa(4, 'Publicação', fmtN(r.validos), 'registros no painel', 'Atualizado em ' + esc(q.geradoEm) + ' · dados de ' + brDate(q.dataInicial) + ' a ' + brDate(q.dataFinal));
+
+  $('qHint').textContent = q.simulado ? 'Modo simulação: defeitos injetados para demonstrar a validação' : 'Dados limpos: todas as regras aprovadas';
+  const b = $('bSimular');
+  b.textContent = q.simulado ? 'Voltar aos dados limpos' : 'Simular dados com problemas';
+  b.onclick = () => carregar(!q.simulado);
+
+  $('checks').innerHTML = '<thead><tr><th>Regra</th><th>O que verifica</th><th>Resultado</th><th>Tratamento</th><th>Detalhe</th></tr></thead><tbody>' +
+    q.checks.map(c => '<tr><td><b>' + c.id + '</b> · ' + esc(c.nome) + '</td><td style="max-width:420px;color:var(--ink2)">' + esc(c.descricao) + '</td><td><span class="st ' + c.status + '">' + ico[c.status] + ' ' + rot[c.status] + '</span></td><td>' + esc(c.tratamento) + '</td><td>' + esc(c.detalhe) + '</td></tr>').join('') + '</tbody>';
+
+  $('quarentenaBox').hidden = !q.quarentena.length;
+  if (q.quarentena.length) {
+    $('qHintQ').textContent = 'Não entram em nenhum cálculo do painel · mostrando ' + q.quarentena.length + ' de ' + fmtN(r.quarentena);
+    $('quarentena').innerHTML = '<thead><tr><th>Lote</th><th>Data</th><th class="num">Frete</th><th>Motivo da rejeição</th></tr></thead><tbody>' +
+      q.quarentena.map(x => '<tr><td>' + esc(x.id_caso) + '</td><td>' + esc(x.data ? (/^\d{4}-\d{2}-\d{2}$/.test(x.data) ? brDate(x.data) : x.data) : '–') + '</td><td class="num">' + (typeof x.valor_frete === 'number' ? brl(x.valor_frete) : '–') + '</td><td>' +
+        x.motivos.map(m => '<span class="tag bad" title="' + esc(m.regra) + '">✕ ' + esc(m.regra) + ' · ' + esc(m.texto) + '</span>').join(' ') + '</td></tr>').join('') + '</tbody>';
+  }
 }
 
 /* ---------- Frete total da operação (venda + pós-venda + outros) ---------- */
@@ -443,6 +528,13 @@ const crosshair = { id:'crosshair', afterDatasetsDraw(ch) {
   const x = a[0].element.x, { top, bottom } = ch.chartArea, ctx = ch.ctx;
   ctx.save(); ctx.strokeStyle = AXIS; ctx.lineWidth = 1; ctx.beginPath(); ctx.moveTo(x, top); ctx.lineTo(x, bottom); ctx.stroke(); ctx.restore();
 } };
+// Valor acima de cada ponto da linha (poucos pontos: mês ou semana).
+const pointLabels = { id:'pointLabels', afterDatasetsDraw(ch) {
+  const ctx = ch.ctx, fm = ch.$fmt || fmtN;
+  ctx.save(); ctx.fillStyle = '#0b0b0b'; ctx.font = '600 11.5px system-ui,sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'bottom';
+  ch.getDatasetMeta(0).data.forEach((p, i) => ctx.fillText(fm(ch.data.datasets[0].data[i]), p.x, p.y - 9));
+  ctx.restore();
+} };
 const barLabels = { id:'barLabels', afterDatasetsDraw(ch) {
   if (ch.config.options.indexAxis !== 'y') return;
   const ctx = ch.ctx, fm = ch.$fmt || fmtN;
@@ -499,7 +591,7 @@ function renderLog() {
   $('hLogMes').textContent = (b.semanal ? 'Casos por semana' : 'Casos por mês') + b.nota;
   chart('cLogMes', { type:'line', data:{ labels:b.keys.map(b.lbl), datasets:[{ label:'Reenvios logísticos', data:b.keys.map(k => cnt(g[k] || [])),
     borderColor:RED, backgroundColor:'rgba(208,59,59,.08)', fill:true, borderWidth:2, tension:0, pointRadius:4, pointHoverRadius:6, pointBackgroundColor:RED, pointBorderColor:'#fcfcfb', pointBorderWidth:2 }] },
-    options:baseOpts({}), plugins:[crosshair] });
+    options:(o => { o.scales.y.grace = '12%'; o.layout.padding = { left:18, right:26, top:4 }; return o; })(baseOpts({})), plugins:[crosshair, pointLabels] });
 
   // Por motivo
   const mg = group(lg, r => r.motivo_reenvio), mk = MOTIVOS_LOG.filter(m => mg[m]).sort((a, b) => cnt(mg[b]) - cnt(mg[a]));

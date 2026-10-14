@@ -1,0 +1,6 @@
+# O clasp só deve enviar ao Apps Script os 3 arquivos do painel.
+# (tests/, README, CI etc. são só do repositório; o harness.js do pytest quebraria no Apps Script.)
+**/**
+!appsscript.json
+!Codigo.gs
+!Index.html

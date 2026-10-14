@@ -14,13 +14,52 @@ Painel web (Google Apps Script) para acompanhar o frete de pós-venda: **trocas,
 - Ranking de transportadoras e detalhamento dos lotes com busca
 - Filtros de período, tipo de pedido, transportadora e UF; cada gráfico tem visão em tabela
 
+## Pipeline de dados: ETL e validação
+
+O painel só mostra dados que passaram por um pipeline de 4 etapas (`montarPayload_` em `Codigo.gs`):
+
+1. **Extração**: recebe os registros (aqui, o gerador fictício; em produção, o banco de dados ou a API).
+2. **Transformação**: converte tipos, padroniza textos (UF em maiúsculas, espaços removidos) e arredonda valores.
+3. **Validação**: 12 regras. Registros que falham vão para **quarentena** e não entram em nenhum cálculo.
+4. **Publicação**: só os registros válidos chegam ao painel, junto com o relatório de qualidade.
+
+| Regra | O que verifica | Se falhar |
+|---|---|---|
+| R01 | Campos obrigatórios preenchidos | Quarentena |
+| R02 | Sem identificador duplicado | Quarentena |
+| R03 | Quantidade inteira > 0 e frete > 0 | Quarentena |
+| R04 | Data válida e dentro do período | Quarentena |
+| R05 | Categoria, tipo, UF e transportadora existem nas listas oficiais | Quarentena |
+| R06 | Reenvio sempre tem motivo; problema logístico só com motivo logístico | Quarentena |
+| R07 | Atrasados ≤ total de casos; prazos > 0 | Quarentena |
+| R08 | Frete por caso entre R$ 5 e R$ 400 | Alerta (o lote segue) |
+| R09 | Soma por tipo, transportadora e UF fecha com o total | Bloqueio |
+| R10 | Todos os meses com dados; último dado recente | Alerta |
+| R11 | Pós-venda entre 15% e 35% do frete total | Alerta |
+| R12 | Frete por dia de cada mês dentro de ±50% da mediana | Alerta |
+
+O painel tem uma seção **Qualidade dos dados** com as etapas, o resultado de cada regra e a tabela de quarentena. O botão **Simular dados com problemas** injeta defeitos típicos (duplicidade, frete negativo, UF inválida, data fora do período...) para mostrar a validação funcionando.
+
+## Testes (pytest)
+
+As regras de validação têm testes automatizados com **pytest**. Eles carregam o `Codigo.gs` real via Node (`tests/harness.js`), então testam exatamente o código que roda no Apps Script: cada regra tem casos bons e ruins, a transformação é verificada e o gerador de dados fictícios tem testes de coerência (período, totais, unicidade, domínios).
+
+```bash
+pip install pytest
+python -m pytest        # requer Node.js instalado
+```
+
+O workflow `.github/workflows/testes.yml` roda a suíte a cada push.
+
 ## Estrutura
 
 | Arquivo | Função |
 |---|---|
-| `Codigo.gs` | Backend: `doGet`, `getDados()`, gerador de dados fictícios e modelo de chamada à API real |
+| `Codigo.gs` | Backend: `doGet`, `getDados()`, pipeline de ETL e validação, gerador de dados fictícios e modelo de chamada à API real |
 | `Index.html` | Painel (HTML, CSS e JS; gráficos com Chart.js 4.4.1, mapa em SVG) |
 | `appsscript.json` | Manifesto do projeto Apps Script |
+| `tests/` | Testes pytest (`test_validacao.py`, `test_gerador.py`) e a ponte `harness.js` |
+| `.claspignore` | Garante que o `clasp push` envie só os 3 arquivos do painel ao Apps Script |
 
 Cada registro é um **lote consolidado**: `qtd` (casos), `qtd_atraso`, `valor_frete` (total do lote), `prazo_previsto` e `prazo_real` (médias), `categoria_frete` (`Venda`, `Pós-venda` ou `Outros`).
 
